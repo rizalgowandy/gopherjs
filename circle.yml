@@ -48,7 +48,7 @@ workflows:
 parameters:
   go_version:
     type: string
-    default: "1.17.3"
+    default: "1.18beta1"
   nvm_version:
     type: string
     default: "0.38.0"
@@ -181,7 +181,7 @@ commands:
           echo 'export GO111MODULE=on' >> $BASH_ENV
           . $BASH_ENV
           go version
-          go get -v github.com/nevkontakte/go-junit-report@forked # For CircleCI test reports.
+          go install -v github.com/nevkontakte/go-junit-report@forked # For CircleCI test reports.
     - run:
         name: Install NVM
         command: |

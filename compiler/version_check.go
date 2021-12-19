@@ -1,5 +1,5 @@
-//go:build go1.17
-// +build go1.17
+//go:build go1.18
+// +build go1.18
 
 package compiler
 
@@ -13,10 +13,10 @@ import (
 )
 
 // Version is the GopherJS compiler version string.
-const Version = "1.17.1+go1.17.3"
+const Version = "1.18.0-dev+go1.18beta1"
 
 // GoVersion is the current Go 1.x version that GopherJS is compatible with.
-const GoVersion = 17
+const GoVersion = 18
 
 // CheckGoVersion checks the version of the Go distribution
 // at goroot, and reports an error if it's not compatible

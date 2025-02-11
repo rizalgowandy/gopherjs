@@ -4,7 +4,6 @@
 package js
 
 import (
-	"reflect"
 	"unsafe"
 
 	"github.com/gopherjs/gopherjs/js"
@@ -23,27 +22,23 @@ const (
 	TypeFunction
 )
 
+// Same order as Type constants
+var typeNames = []string{
+	"undefined",
+	"null",
+	"boolean",
+	"number",
+	"string",
+	"symbol",
+	"object",
+	"function",
+}
+
 func (t Type) String() string {
-	switch t {
-	case TypeUndefined:
-		return "undefined"
-	case TypeNull:
-		return "null"
-	case TypeBoolean:
-		return "boolean"
-	case TypeNumber:
-		return "number"
-	case TypeString:
-		return "string"
-	case TypeSymbol:
-		return "symbol"
-	case TypeObject:
-		return "object"
-	case TypeFunction:
-		return "function"
-	default:
+	if int(t) < 0 || len(typeNames) <= int(t) {
 		panic("bad type")
 	}
+	return typeNames[t]
 }
 
 func (t Type) isObject() bool {
@@ -111,46 +106,34 @@ func objectToValue(obj *js.Object) Value {
 }
 
 var (
-	id           *js.Object
-	instanceOf   *js.Object
-	getValueType *js.Object
+	id         *js.Object
+	instanceOf *js.Object
+	typeOf     *js.Object
 )
 
 func init() {
 	if js.Global != nil {
-		id = js.Global.Call("eval", "(function(x) { return x; })")
-		instanceOf = js.Global.Call("eval", "(function(x, y) { return x instanceof y; })")
-		getValueType = js.Global.Call("eval", `(function(x) {
-  if (typeof(x) === "undefined") {
-    return 0; // TypeUndefined
-  }
-  if (x === null) {
-    return 1; // TypeNull
-  }
-  if (typeof(x) === "boolean") {
-    return 2; // TypeBoolean
-  }
-  if (typeof(x) === "number") {
-    return 3; // TypeNumber
-  }
-  if (typeof(x) === "string") {
-    return 4; // TypeString
-  }
-  if (typeof(x) === "symbol") {
-    return 5; // TypeSymbol
-  }
-  if (typeof(x) === "function") {
-    return 7; // TypeFunction
-  }
-  return 6; // TypeObject
-})`)
+		id = js.Global.Get("$id")
+		instanceOf = js.Global.Get("$instanceOf")
+		typeOf = js.Global.Get("$typeOf")
 	}
+}
+
+func getValueType(obj *js.Object) Type {
+	if obj == nil {
+		return TypeNull
+	}
+	name := typeOf.Invoke(obj).String()
+	for type2, name2 := range typeNames {
+		if name == name2 {
+			return Type(type2)
+		}
+	}
+	return TypeObject
 }
 
 func ValueOf(x interface{}) Value {
 	switch x := x.(type) {
-	case Wrapper:
-		return x.JSValue()
 	case Value:
 		return x
 	case Func:
@@ -160,7 +143,7 @@ func ValueOf(x interface{}) Value {
 	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, unsafe.Pointer, string, map[string]interface{}, []interface{}:
 		return objectToValue(id.Invoke(x))
 	default:
-		panic(`invalid arg: ` + reflect.TypeOf(x).String())
+		panic("ValueOf: invalid value")
 	}
 }
 
@@ -188,6 +171,22 @@ func convertArgs(args ...interface{}) []interface{} {
 	return newArgs
 }
 
+func convertJSError() {
+	err := recover()
+	if err == nil {
+		return
+	}
+	if jsErr, ok := err.(*js.Error); ok {
+		// We expect that all panics caught by Value.Call() are in fact JavaScript
+		// exceptions intercepted by GopherJS runtime, which we convert to
+		// syscall/js.Error, which the callers would expect.
+		panic(Error{Value: objectToValue(jsErr.Object)})
+	}
+	// Panics of other types are unexpected and should never happen. But if it
+	// does, we will just re-raise it as-is.
+	panic(err)
+}
+
 func (v Value) Call(m string, args ...interface{}) Value {
 	if vType := v.Type(); vType != TypeObject && vType != TypeFunction {
 		panic(&ValueError{"Value.Call", vType})
@@ -195,6 +194,7 @@ func (v Value) Call(m string, args ...interface{}) Value {
 	if propType := v.Get(m).Type(); propType != TypeFunction {
 		panic("js: Value.Call: property " + m + " is not a function, got " + propType.String())
 	}
+	defer convertJSError()
 	return objectToValue(v.internal().Call(m, convertArgs(args...)...))
 }
 
@@ -308,7 +308,7 @@ func (v Value) Truthy() bool {
 }
 
 func (v Value) Type() Type {
-	return Type(getValueType.Invoke(v.internal()).Int())
+	return Type(getValueType(v.internal()))
 }
 
 func (v Value) IsNull() bool {
@@ -343,10 +343,6 @@ type ValueError struct {
 
 func (e *ValueError) Error() string {
 	return "syscall/js: call of " + e.Method + " on " + e.Type.String()
-}
-
-type Wrapper interface {
-	JSValue() Value
 }
 
 // CopyBytesToGo copies bytes from the Uint8Array src to dst.

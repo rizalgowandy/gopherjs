@@ -18,9 +18,28 @@ import (
 	"text/template"
 	"unicode"
 
-	"github.com/gopherjs/gopherjs/compiler/analysis"
+	"github.com/gopherjs/gopherjs/compiler/internal/analysis"
+	"github.com/gopherjs/gopherjs/compiler/internal/typeparams"
 	"github.com/gopherjs/gopherjs/compiler/typesutil"
 )
+
+// We use this character as a separator in synthetic identifiers instead of a
+// regular dot. This character is safe for use in JS identifiers and helps to
+// visually separate components of the name when it appears in a stack trace.
+const midDot = "·"
+
+// root returns the topmost function context corresponding to the package scope.
+func (fc *funcContext) root() *funcContext {
+	if fc.isRoot() {
+		return fc
+	}
+	return fc.parent.root()
+}
+
+// isRoot returns true for the package-level context.
+func (fc *funcContext) isRoot() bool {
+	return fc.parent == nil
+}
 
 func (fc *funcContext) Write(b []byte) (int, error) {
 	fc.writePos()
@@ -29,7 +48,7 @@ func (fc *funcContext) Write(b []byte) (int, error) {
 }
 
 func (fc *funcContext) Printf(format string, values ...interface{}) {
-	fc.Write([]byte(strings.Repeat("\t", fc.pkgCtx.indentation)))
+	fc.Write([]byte(fc.Indentation(0)))
 	fmt.Fprintf(fc, format, values...)
 	fc.Write([]byte{'\n'})
 	fc.Write(fc.delayedOutput)
@@ -57,10 +76,19 @@ func (fc *funcContext) writePos() {
 	}
 }
 
-func (fc *funcContext) Indent(f func()) {
+// Indented increases generated code indentation level by 1 for the code emitted
+// from the callback f.
+func (fc *funcContext) Indented(f func()) {
 	fc.pkgCtx.indentation++
 	f()
 	fc.pkgCtx.indentation--
+}
+
+// Indentation returns a sequence of "\t" characters appropriate to the current
+// generated code indentation level. The `extra` parameter provides relative
+// indentation adjustment.
+func (fc *funcContext) Indentation(extra int) string {
+	return strings.Repeat("\t", fc.pkgCtx.indentation+extra)
 }
 
 func (fc *funcContext) CatchOutput(indent int, f func()) []byte {
@@ -84,24 +112,29 @@ func (fc *funcContext) Delayed(f func()) {
 // tuple elements.
 //
 // For example, for functions defined as:
-//   func a() (int, string) {return 42, "foo"}
-//   func b(a1 int, a2 string) {}
+//
+//	func a() (int, string) {return 42, "foo"}
+//	func b(a1 int, a2 string) {}
+//
 // ...the following statement:
-//     b(a())
+//
+//	b(a())
+//
 // ...will be transformed into:
-//     _tuple := a()
-//     b(_tuple[0], _tuple[1])
+//
+//	_tuple := a()
+//	b(_tuple[0], _tuple[1])
 func (fc *funcContext) expandTupleArgs(argExprs []ast.Expr) []ast.Expr {
 	if len(argExprs) != 1 {
 		return argExprs
 	}
 
-	tuple, isTuple := fc.pkgCtx.TypeOf(argExprs[0]).(*types.Tuple)
+	tuple, isTuple := fc.typeOf(argExprs[0]).(*types.Tuple)
 	if !isTuple {
 		return argExprs
 	}
 
-	tupleVar := fc.newVariable("_tuple")
+	tupleVar := fc.newLocalVariable("_tuple")
 	fc.Printf("%s = %s;", tupleVar, fc.translateExpr(argExprs[0]))
 	argExprs = make([]ast.Expr, tuple.Len())
 	for i := range argExprs {
@@ -113,7 +146,7 @@ func (fc *funcContext) expandTupleArgs(argExprs []ast.Expr) []ast.Expr {
 func (fc *funcContext) translateArgs(sig *types.Signature, argExprs []ast.Expr, ellipsis bool) []string {
 	argExprs = fc.expandTupleArgs(argExprs)
 
-	sigTypes := signatureTypes{Sig: sig}
+	sigTypes := typesutil.Signature{Sig: sig}
 
 	if sig.Variadic() && len(argExprs) == 0 {
 		return []string{fmt.Sprintf("%s.nil", fc.typeName(sigTypes.VariadicType()))}
@@ -129,7 +162,7 @@ func (fc *funcContext) translateArgs(sig *types.Signature, argExprs []ast.Expr, 
 		arg := fc.translateImplicitConversionWithCloning(argExpr, sigTypes.Param(i, ellipsis)).String()
 
 		if preserveOrder && fc.pkgCtx.Types[argExpr].Value == nil {
-			argVar := fc.newVariable("_arg")
+			argVar := fc.newLocalVariable("_arg")
 			fc.Printf("%s = %s;", argVar, arg)
 			arg = argVar
 		}
@@ -140,13 +173,20 @@ func (fc *funcContext) translateArgs(sig *types.Signature, argExprs []ast.Expr, 
 	// If variadic arguments were passed in as individual elements, regroup them
 	// into a slice and pass it as a single argument.
 	if sig.Variadic() && !ellipsis {
-		return append(args[:sigTypes.RequiredParams()],
-			fmt.Sprintf("new %s([%s])", fc.typeName(sigTypes.VariadicType()), strings.Join(args[sigTypes.RequiredParams():], ", ")))
+		required := args[:sigTypes.RequiredParams()]
+		var variadic string
+		if len(args) == sigTypes.RequiredParams() {
+			// If no variadic parameters were passed, the slice value defaults to nil.
+			variadic = fmt.Sprintf("%s.nil", fc.typeName(sigTypes.VariadicType()))
+		} else {
+			variadic = fmt.Sprintf("new %s([%s])", fc.typeName(sigTypes.VariadicType()), strings.Join(args[sigTypes.RequiredParams():], ", "))
+		}
+		return append(required, variadic)
 	}
 	return args
 }
 
-func (fc *funcContext) translateSelection(sel selection, pos token.Pos) ([]string, string) {
+func (fc *funcContext) translateSelection(sel typesutil.Selection, pos token.Pos) ([]string, string) {
 	var fields []string
 	t := sel.Recv()
 	for _, index := range sel.Index() {
@@ -217,11 +257,26 @@ func (fc *funcContext) newConst(t types.Type, value constant.Value) ast.Expr {
 	return id
 }
 
-func (fc *funcContext) newVariable(name string) string {
-	return fc.newVariableWithLevel(name, false)
+// newLocalVariable assigns a new JavaScript variable name for the given Go
+// local variable name. In this context "local" means "in scope of the current"
+// functionContext.
+func (fc *funcContext) newLocalVariable(name string) string {
+	return fc.newVariable(name, false)
 }
 
-func (fc *funcContext) newVariableWithLevel(name string, pkgLevel bool) string {
+// newVariable assigns a new JavaScript variable name for the given Go variable
+// or type.
+//
+// If there is already a variable with the same name visible in the current
+// function context (e.g. due to shadowing), the returned name will be suffixed
+// with a number to prevent conflict. This is necessary because Go name
+// resolution scopes differ from var declarations in JS.
+//
+// If pkgLevel is true, the variable is declared at the package level and added
+// to this functionContext, as well as all parents, but not to the list of local
+// variables. If false, it is added to this context only, as well as the list of
+// local vars.
+func (fc *funcContext) newVariable(name string, pkgLevel bool) string {
 	if name == "" {
 		panic("newVariable: empty name")
 	}
@@ -266,13 +321,46 @@ func (fc *funcContext) newVariableWithLevel(name string, pkgLevel bool) string {
 	return varName
 }
 
+// newIdent declares a new Go variable with the given name and type and returns
+// an *ast.Ident referring to that object.
 func (fc *funcContext) newIdent(name string, t types.Type) *ast.Ident {
-	ident := ast.NewIdent(name)
-	fc.setType(ident, t)
 	obj := types.NewVar(0, fc.pkgCtx.Pkg, name, t)
+	fc.objectNames[obj] = name
+	return fc.newIdentFor(obj)
+}
+
+// newIdentFor creates a new *ast.Ident referring to the given Go object.
+func (fc *funcContext) newIdentFor(obj types.Object) *ast.Ident {
+	ident := ast.NewIdent(obj.Name())
+	ident.NamePos = obj.Pos()
 	fc.pkgCtx.Uses[ident] = obj
-	fc.pkgCtx.objectNames[obj] = name
+	fc.setType(ident, obj.Type())
 	return ident
+}
+
+func (fc *funcContext) newTypeIdent(name string, obj types.Object) *ast.Ident {
+	ident := ast.NewIdent(name)
+	fc.pkgCtx.Info.Uses[ident] = obj
+	return ident
+}
+
+// newLitFuncName generates a new synthetic name for a function literal.
+func (fc *funcContext) newLitFuncName() string {
+	fc.funcLitCounter++
+	name := &strings.Builder{}
+
+	// If function literal is defined inside another function, qualify its
+	// synthetic name with the outer function to make it easier to identify.
+	if fc.instance.Object != nil {
+		if recvType := typesutil.RecvType(fc.sig.Sig); recvType != nil {
+			name.WriteString(recvType.Obj().Name())
+			name.WriteString(midDot)
+		}
+		name.WriteString(fc.instance.Object.Name())
+		name.WriteString(midDot)
+	}
+	fmt.Fprintf(name, "func%d", fc.funcLitCounter)
+	return name.String()
 }
 
 func (fc *funcContext) setType(e ast.Expr, t types.Type) ast.Expr {
@@ -301,26 +389,90 @@ func isVarOrConst(o types.Object) bool {
 }
 
 func isPkgLevel(o types.Object) bool {
-	return o.Parent() != nil && o.Parent().Parent() == types.Universe
+	// Note: named types are always assigned a variable at package level to be
+	// initialized with the rest of the package types, even the types declared
+	// in a statement inside a function.
+	_, isType := o.(*types.TypeName)
+	return (o.Parent() != nil && o.Parent().Parent() == types.Universe) || isType
 }
 
+// assignedObjectName checks if the object has been previously assigned a name
+// in this or one of the parent contexts. If not, found will be false.
+func (fc *funcContext) assignedObjectName(o types.Object) (name string, found bool) {
+	if fc == nil {
+		return "", false
+	}
+	if name, found := fc.parent.assignedObjectName(o); found {
+		return name, true
+	}
+
+	name, found = fc.objectNames[o]
+	return name, found
+}
+
+// objectName returns a JS expression that refers to the given object. If the
+// object hasn't been previously assigned a JS variable name, it will be
+// allocated as needed.
 func (fc *funcContext) objectName(o types.Object) string {
 	if isPkgLevel(o) {
-		fc.pkgCtx.dependencies[o] = true
+		fc.pkgCtx.DeclareDCEDep(o)
 
 		if o.Pkg() != fc.pkgCtx.Pkg || (isVarOrConst(o) && o.Exported()) {
 			return fc.pkgVar(o.Pkg()) + "." + o.Name()
 		}
 	}
 
-	name, ok := fc.pkgCtx.objectNames[o]
+	name, ok := fc.assignedObjectName(o)
 	if !ok {
-		name = fc.newVariableWithLevel(o.Name(), isPkgLevel(o))
-		fc.pkgCtx.objectNames[o] = name
+		pkgLevel := isPkgLevel(o)
+		name = fc.newVariable(o.Name(), pkgLevel)
+		if pkgLevel {
+			fc.root().objectNames[o] = name
+		} else {
+			fc.objectNames[o] = name
+		}
 	}
 
 	if v, ok := o.(*types.Var); ok && fc.pkgCtx.escapingVars[v] {
 		return name + "[0]"
+	}
+	return name
+}
+
+// knownInstances returns a list of known instantiations of the object.
+//
+// For objects without type params always returns a single trivial instance.
+func (fc *funcContext) knownInstances(o types.Object) []typeparams.Instance {
+	if !typeparams.HasTypeParams(o.Type()) {
+		return []typeparams.Instance{{Object: o}}
+	}
+
+	return fc.pkgCtx.instanceSet.Pkg(o.Pkg()).ForObj(o)
+}
+
+// instName returns a JS expression that refers to the provided instance of a
+// function or type. Non-generic objects may be represented as an instance with
+// zero type arguments.
+func (fc *funcContext) instName(inst typeparams.Instance) string {
+	objName := fc.objectName(inst.Object)
+	if inst.IsTrivial() {
+		return objName
+	}
+	fc.pkgCtx.DeclareDCEDep(inst.Object, inst.TArgs...)
+	return fmt.Sprintf("%s[%d /* %v */]", objName, fc.pkgCtx.instanceSet.ID(inst), inst.TArgs)
+}
+
+// methodName returns a JS identifier (specifically, object property name)
+// corresponding to the given method.
+func (fc *funcContext) methodName(fun *types.Func) string {
+	if fun.Type().(*types.Signature).Recv() == nil {
+		panic(fmt.Errorf("expected a method, got a standalone function %v", fun))
+	}
+	name := fun.Name()
+	// Method names are scoped to their receiver type and guaranteed to be
+	// unique within that, so we only need to make sure it's not a reserved keyword
+	if reservedKeywords[name] {
+		name += "$"
 	}
 	return name
 }
@@ -332,12 +484,17 @@ func (fc *funcContext) varPtrName(o *types.Var) string {
 
 	name, ok := fc.pkgCtx.varPtrNames[o]
 	if !ok {
-		name = fc.newVariableWithLevel(o.Name()+"$ptr", isPkgLevel(o))
+		name = fc.newVariable(o.Name()+"$ptr", isPkgLevel(o))
 		fc.pkgCtx.varPtrNames[o] = name
 	}
 	return name
 }
 
+// typeName returns a JS identifier name for the given Go type.
+//
+// For the built-in types it returns identifiers declared in the prelude. For
+// all user-defined or composite types it creates a unique JS identifier and
+// will return it on all subsequent calls for the type.
 func (fc *funcContext) typeName(ty types.Type) string {
 	switch t := ty.(type) {
 	case *types.Basic:
@@ -346,23 +503,86 @@ func (fc *funcContext) typeName(ty types.Type) string {
 		if t.Obj().Name() == "error" {
 			return "$error"
 		}
-		return fc.objectName(t.Obj())
+		inst := typeparams.Instance{Object: t.Obj()}
+		for i := 0; i < t.TypeArgs().Len(); i++ {
+			inst.TArgs = append(inst.TArgs, t.TypeArgs().At(i))
+		}
+		return fc.instName(inst)
 	case *types.Interface:
 		if t.Empty() {
 			return "$emptyInterface"
 		}
 	}
 
+	// For anonymous composite types, generate a synthetic package-level type
+	// declaration, which will be reused for all instances of this type. This
+	// improves performance, since runtime won't have to synthesize the same type
+	// repeatedly.
 	anonType, ok := fc.pkgCtx.anonTypeMap.At(ty).(*types.TypeName)
 	if !ok {
 		fc.initArgs(ty) // cause all embedded types to be registered
-		varName := fc.newVariableWithLevel(strings.ToLower(typeKind(ty)[5:])+"Type", true)
+		varName := fc.newVariable(strings.ToLower(typeKind(ty)[5:])+"Type", true)
 		anonType = types.NewTypeName(token.NoPos, fc.pkgCtx.Pkg, varName, ty) // fake types.TypeName
 		fc.pkgCtx.anonTypes = append(fc.pkgCtx.anonTypes, anonType)
 		fc.pkgCtx.anonTypeMap.Set(ty, anonType)
 	}
-	fc.pkgCtx.dependencies[anonType] = true
+	fc.pkgCtx.DeclareDCEDep(anonType)
 	return anonType.Name()
+}
+
+// importedPkgVar returns a package-level variable name for accessing an imported
+// package.
+//
+// Allocates a new variable if this is the first call, or returns the existing
+// one. The variable is based on the package name (implicitly derived from the
+// `package` declaration in the imported package, or explicitly assigned by the
+// import decl in the importing source file).
+//
+// Returns the allocated variable name.
+func (fc *funcContext) importedPkgVar(pkg *types.Package) string {
+	if pkgVar, ok := fc.pkgCtx.pkgVars[pkg.Path()]; ok {
+		return pkgVar // Already registered.
+	}
+
+	pkgVar := fc.newVariable(pkg.Name(), true)
+	fc.pkgCtx.pkgVars[pkg.Path()] = pkgVar
+	return pkgVar
+}
+
+// instanceOf constructs an instance description of the object the ident is
+// referring to. For non-generic objects, it will return a trivial instance with
+// no type arguments.
+func (fc *funcContext) instanceOf(ident *ast.Ident) typeparams.Instance {
+	inst := typeparams.Instance{Object: fc.pkgCtx.ObjectOf(ident)}
+	if i, ok := fc.pkgCtx.Instances[ident]; ok {
+		inst.TArgs = fc.typeResolver.SubstituteAll(i.TypeArgs)
+	}
+	return inst
+}
+
+// typeOf returns a type associated with the given AST expression. For types
+// defined in terms of type parameters, it will substitute type parameters with
+// concrete types from the current set of type arguments.
+func (fc *funcContext) typeOf(expr ast.Expr) types.Type {
+	typ := fc.pkgCtx.TypeOf(expr)
+	// If the expression is referring to an instance of a generic type or function,
+	// we want the instantiated type.
+	if ident, ok := expr.(*ast.Ident); ok {
+		if inst, ok := fc.pkgCtx.Instances[ident]; ok {
+			typ = inst.Type
+		}
+	}
+	return fc.typeResolver.Substitute(typ)
+}
+
+func (fc *funcContext) selectionOf(e *ast.SelectorExpr) (typesutil.Selection, bool) {
+	if sel, ok := fc.pkgCtx.Selections[e]; ok {
+		return fc.typeResolver.SubstituteSelection(sel), true
+	}
+	if sel, ok := fc.pkgCtx.additionalSelections[e]; ok {
+		return sel, true
+	}
+	return nil, false
 }
 
 func (fc *funcContext) externalize(s string, t types.Type) string {
@@ -390,12 +610,6 @@ func (fc *funcContext) handleEscapingVars(n ast.Node) {
 
 	var names []string
 	objs := analysis.EscapingObjects(n, fc.pkgCtx.Info.Info)
-	sort.Slice(objs, func(i, j int) bool {
-		if objs[i].Name() == objs[j].Name() {
-			return objs[i].Pos() < objs[j].Pos()
-		}
-		return objs[i].Name() < objs[j].Name()
-	})
 	for _, obj := range objs {
 		names = append(names, fc.objectName(obj))
 		fc.pkgCtx.escapingVars[obj] = true
@@ -506,24 +720,24 @@ func isBlank(expr ast.Expr) bool {
 //
 // For example, consider a Go type:
 //
-// 		 type SecretInt int
-//     func (_ SecretInt) String() string { return "<secret>" }
+//	type SecretInt int
+//	func (_ SecretInt) String() string { return "<secret>" }
 //
-//     func main() {
-//       var i SecretInt = 1
-//       println(i.String())
-//     }
+//	func main() {
+//	  var i SecretInt = 1
+//	  println(i.String())
+//	}
 //
 // For this example the compiler will generate code similar to the snippet below:
 //
-//     SecretInt = $pkg.SecretInt = $newType(4, $kindInt, "main.SecretInt", true, "main", true, null);
-//     SecretInt.prototype.String = function() {
-//       return "<secret>";
-//     };
-//     main = function() {
-//       var i = 1;
-//       console.log(new SecretInt(i).String());
-//     };
+//	SecretInt = $pkg.SecretInt = $newType(4, $kindInt, "main.SecretInt", true, "main", true, null);
+//	SecretInt.prototype.String = function() {
+//	  return "<secret>";
+//	};
+//	main = function() {
+//	  var i = 1;
+//	  console.log(new SecretInt(i).String());
+//	};
 //
 // Note that the generated code assigns a primitive "number" value into i, and
 // only boxes it into an object when it's necessary to access its methods.
@@ -683,7 +897,15 @@ func rangeCheck(pattern string, constantIndex, array bool) string {
 }
 
 func encodeIdent(name string) string {
-	return strings.Replace(url.QueryEscape(name), "%", "$", -1)
+	// Quick-and-dirty way to make any string safe for use as an identifier in JS.
+	name = url.QueryEscape(name)
+	// We use unicode middle dot as a visual separator in synthetic identifiers.
+	// It is safe for use in a JS identifier, so we un-encode it for readability.
+	name = strings.ReplaceAll(name, "%C2%B7", midDot)
+	// QueryEscape uses '%' before hex-codes of escaped characters, which is not
+	// allowed in a JS identifier, use '$' instead.
+	name = strings.ReplaceAll(name, "%", "$")
+	return name
 }
 
 // formatJSStructTagVal returns JavaScript code for accessing an object's property
@@ -692,13 +914,12 @@ func encodeIdent(name string) string {
 //
 // For example:
 //
-// 	"my_name" -> ".my_name"
-// 	"my name" -> `["my name"]`
+//	"my_name" -> ".my_name"
+//	"my name" -> `["my name"]`
 //
 // For more information about JavaScript property accessors and identifiers, see
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Property_Accessors and
 // https://developer.mozilla.org/en-US/docs/Glossary/Identifier.
-//
 func formatJSStructTagVal(jsTag string) string {
 	for i, r := range jsTag {
 		ok := unicode.IsLetter(r) || (i != 0 && unicode.IsNumber(r)) || r == '$' || r == '_'
@@ -710,56 +931,6 @@ func formatJSStructTagVal(jsTag string) string {
 	}
 	// Safe to use dot notation without any escaping.
 	return "." + jsTag
-}
-
-// signatureTypes is a helper that provides convenient access to function
-// signature type information.
-type signatureTypes struct {
-	Sig *types.Signature
-}
-
-// RequiredParams returns the number of required parameters in the function signature.
-func (st signatureTypes) RequiredParams() int {
-	l := st.Sig.Params().Len()
-	if st.Sig.Variadic() {
-		return l - 1 // Last parameter is a slice of variadic params.
-	}
-	return l
-}
-
-// VariadicType returns the slice-type corresponding to the signature's variadic
-// parameter, or nil of the signature is not variadic. With the exception of
-// the special-case `append([]byte{}, "string"...)`, the returned type is
-// `*types.Slice` and `.Elem()` method can be used to get the type of individual
-// arguments.
-func (st signatureTypes) VariadicType() types.Type {
-	if !st.Sig.Variadic() {
-		return nil
-	}
-	return st.Sig.Params().At(st.Sig.Params().Len() - 1).Type()
-}
-
-// Returns the expected argument type for the i'th argument position.
-//
-// This function is able to return correct expected types for variadic calls
-// both when ellipsis syntax (e.g. myFunc(requiredArg, optionalArgSlice...))
-// is used and when optional args are passed individually.
-//
-// The returned types may differ from the actual argument expression types if
-// there is an implicit type conversion involved (e.g. passing a struct into a
-// function that expects an interface).
-func (st signatureTypes) Param(i int, ellipsis bool) types.Type {
-	if i < st.RequiredParams() {
-		return st.Sig.Params().At(i).Type()
-	}
-	if !st.Sig.Variadic() {
-		// This should never happen if the code was type-checked successfully.
-		panic(fmt.Errorf("Tried to access parameter %d of a non-variadic signature %s", i, st.Sig))
-	}
-	if ellipsis {
-		return st.VariadicType()
-	}
-	return st.VariadicType().(*types.Slice).Elem()
 }
 
 // ErrorAt annotates an error with a position in the source code.
@@ -819,4 +990,14 @@ func bailout(cause interface{}) *FatalError {
 func bailingOut(err interface{}) (*FatalError, bool) {
 	fe, ok := err.(*FatalError)
 	return fe, ok
+}
+
+func removeMatching[T comparable](haystack []T, needle T) []T {
+	var result []T
+	for _, el := range haystack {
+		if el != needle {
+			result = append(result, el)
+		}
+	}
+	return result
 }

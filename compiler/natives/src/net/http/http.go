@@ -7,7 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"io/ioutil"
+	"io"
 	"net/textproto"
 	"strconv"
 
@@ -16,8 +16,9 @@ import (
 
 var DefaultTransport = func() RoundTripper {
 	switch {
-	case js.Global.Get("fetch") != js.Undefined && js.Global.Get("ReadableStream") != js.Undefined: // ReadableStream is used as a check for support of streaming response bodies, see https://fetch.spec.whatwg.org/#streams.
-		return &fetchTransport{}
+	case js.Global.Get("fetch") != js.Undefined:
+		// Use standard library js/wasm fetch-based implementation.
+		return &Transport{}
 	case js.Global.Get("XMLHttpRequest") != js.Undefined:
 		return &XHRTransport{}
 	default:
@@ -67,7 +68,7 @@ func (t *XHRTransport) RoundTrip(req *Request) (*Response, error) {
 			StatusCode:    xhr.Get("status").Int(),
 			Header:        Header(header),
 			ContentLength: contentLength,
-			Body:          ioutil.NopCloser(bytes.NewReader(body)),
+			Body:          io.NopCloser(bytes.NewReader(body)),
 			Request:       req,
 		}
 	})
@@ -90,7 +91,7 @@ func (t *XHRTransport) RoundTrip(req *Request) (*Response, error) {
 	if req.Body == nil {
 		xhr.Call("send")
 	} else {
-		body, err := ioutil.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			req.Body.Close() // RoundTrip must always close the body, including on errors.
 			return nil, err

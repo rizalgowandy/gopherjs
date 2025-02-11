@@ -32,9 +32,7 @@ func init() {
 	uint8Type = TypeOf(uint8(0)).(*rtype) // set for real
 }
 
-var (
-	uint8Type *rtype
-)
+var uint8Type *rtype
 
 var (
 	idJsType      = "_jsType"
@@ -52,7 +50,7 @@ func reflectType(typ *js.Object) *rtype {
 		rt := &rtype{
 			size: uintptr(typ.Get("size").Int()),
 			kind: uint8(typ.Get("kind").Int()),
-			str:  newNameOff(newName(internalStr(typ.Get("string")), "", typ.Get("exported").Bool())),
+			str:  newNameOff(newName(internalStr(typ.Get("string")), "", typ.Get("exported").Bool(), false)),
 		}
 		js.InternalObject(rt).Set(idJsType, typ)
 		typ.Set(idReflectType, js.InternalObject(rt))
@@ -71,7 +69,7 @@ func reflectType(typ *js.Object) *rtype {
 					continue
 				}
 				reflectMethods = append(reflectMethods, method{
-					name: newNameOff(newName(internalStr(m.Get("name")), "", exported)),
+					name: newNameOff(newName(internalStr(m.Get("name")), "", exported, false)),
 					mtyp: newTypeOff(reflectType(m.Get("typ"))),
 				})
 			}
@@ -83,12 +81,12 @@ func reflectType(typ *js.Object) *rtype {
 					continue
 				}
 				reflectMethods = append(reflectMethods, method{
-					name: newNameOff(newName(internalStr(m.Get("name")), "", exported)),
+					name: newNameOff(newName(internalStr(m.Get("name")), "", exported, false)),
 					mtyp: newTypeOff(reflectType(m.Get("typ"))),
 				})
 			}
 			ut := &uncommonType{
-				pkgPath:  newNameOff(newName(internalStr(typ.Get("pkg")), "", false)),
+				pkgPath:  newNameOff(newName(internalStr(typ.Get("pkg")), "", false, false)),
 				mcount:   uint16(methodSet.Length()),
 				xcount:   xcount,
 				_methods: reflectMethods,
@@ -143,13 +141,13 @@ func reflectType(typ *js.Object) *rtype {
 			for i := range imethods {
 				m := methods.Index(i)
 				imethods[i] = imethod{
-					name: newNameOff(newName(internalStr(m.Get("name")), "", internalStr(m.Get("pkg")) == "")),
+					name: newNameOff(newName(internalStr(m.Get("name")), "", internalStr(m.Get("pkg")) == "", false)),
 					typ:  newTypeOff(reflectType(m.Get("typ"))),
 				}
 			}
 			setKindType(rt, &interfaceType{
 				rtype:   *rt,
-				pkgPath: newName(internalStr(typ.Get("pkg")), "", false),
+				pkgPath: newName(internalStr(typ.Get("pkg")), "", false, false),
 				methods: imethods,
 			})
 		case Map:
@@ -170,19 +168,15 @@ func reflectType(typ *js.Object) *rtype {
 			reflectFields := make([]structField, fields.Length())
 			for i := range reflectFields {
 				f := fields.Index(i)
-				offsetEmbed := uintptr(i) << 1
-				if f.Get("embedded").Bool() {
-					offsetEmbed |= 1
-				}
 				reflectFields[i] = structField{
-					name:        newName(internalStr(f.Get("name")), internalStr(f.Get("tag")), f.Get("exported").Bool()),
-					typ:         reflectType(f.Get("typ")),
-					offsetEmbed: offsetEmbed,
+					name:   newName(internalStr(f.Get("name")), internalStr(f.Get("tag")), f.Get("exported").Bool(), f.Get("embedded").Bool()),
+					typ:    reflectType(f.Get("typ")),
+					offset: uintptr(i),
 				}
 			}
 			setKindType(rt, &structType{
 				rtype:   *rt,
-				pkgPath: newName(internalStr(typ.Get("pkgPath")), "", false),
+				pkgPath: newName(internalStr(typ.Get("pkgPath")), "", false, false),
 				fields:  reflectFields,
 			})
 		}
@@ -244,6 +238,7 @@ type nameData struct {
 	name     string
 	tag      string
 	exported bool
+	embedded bool
 }
 
 var nameMap = make(map[*byte]*nameData)
@@ -252,13 +247,15 @@ func (n name) name() (s string) { return nameMap[n.bytes].name }
 func (n name) tag() (s string)  { return nameMap[n.bytes].tag }
 func (n name) pkgPath() string  { return "" }
 func (n name) isExported() bool { return nameMap[n.bytes].exported }
+func (n name) embedded() bool   { return nameMap[n.bytes].embedded }
 
-func newName(n, tag string, exported bool) name {
+func newName(n, tag string, exported, embedded bool) name {
 	b := new(byte)
 	nameMap[b] = &nameData{
 		name:     n,
 		tag:      tag,
 		exported: exported,
+		embedded: embedded,
 	}
 	return name{
 		bytes: b,
@@ -475,7 +472,7 @@ func makechan(typ *rtype, size int) (ch unsafe.Pointer) {
 }
 
 func makemap(t *rtype, cap int) (m unsafe.Pointer) {
-	return unsafe.Pointer(js.Global.Get("Object").New().Unsafe())
+	return unsafe.Pointer(js.Global.Get("Map").New().Unsafe())
 }
 
 func keyFor(t *rtype, key unsafe.Pointer) (*js.Object, string) {
@@ -489,7 +486,7 @@ func keyFor(t *rtype, key unsafe.Pointer) (*js.Object, string) {
 
 func mapaccess(t *rtype, m, key unsafe.Pointer) unsafe.Pointer {
 	_, k := keyFor(t, key)
-	entry := js.InternalObject(m).Get(k)
+	entry := js.InternalObject(m).Call("get", k)
 	if entry == js.Undefined {
 		return nil
 	}
@@ -508,12 +505,12 @@ func mapassign(t *rtype, m, key, val unsafe.Pointer) {
 	entry := js.Global.Get("Object").New()
 	entry.Set("k", kv)
 	entry.Set("v", jsVal)
-	js.InternalObject(m).Set(k, entry)
+	js.InternalObject(m).Call("set", k, entry)
 }
 
 func mapdelete(t *rtype, m unsafe.Pointer, key unsafe.Pointer) {
 	_, k := keyFor(t, key)
-	js.InternalObject(m).Delete(k)
+	js.InternalObject(m).Call("delete", k)
 }
 
 type mapIter struct {
@@ -531,7 +528,7 @@ type mapIter struct {
 func (iter *mapIter) skipUntilValidKey() {
 	for iter.i < iter.keys.Length() {
 		k := iter.keys.Index(iter.i)
-		if iter.m.Get(k.String()) != js.Undefined {
+		if iter.m.Call("get", k) != js.Undefined {
 			break
 		}
 		// The key is already deleted. Move on the next item.
@@ -540,7 +537,7 @@ func (iter *mapIter) skipUntilValidKey() {
 }
 
 func mapiterinit(t *rtype, m unsafe.Pointer) unsafe.Pointer {
-	return unsafe.Pointer(&mapIter{t, js.InternalObject(m), js.Global.Call("$keys", js.InternalObject(m)), 0, nil})
+	return unsafe.Pointer(&mapIter{t, js.InternalObject(m), js.Global.Get("Array").Call("from", js.InternalObject(m).Call("keys")), 0, nil})
 }
 
 type TypeEx interface {
@@ -559,7 +556,7 @@ func mapiterkey(it unsafe.Pointer) unsafe.Pointer {
 			return nil
 		}
 		k := iter.keys.Index(iter.i)
-		kv = iter.m.Get(k.String())
+		kv = iter.m.Call("get", k)
 
 		// Record the key-value pair for later accesses.
 		iter.last = kv
@@ -574,11 +571,11 @@ func mapiternext(it unsafe.Pointer) {
 }
 
 func maplen(m unsafe.Pointer) int {
-	return js.Global.Call("$keys", js.InternalObject(m)).Length()
+	return js.InternalObject(m).Get("size").Int()
 }
 
 func cvtDirect(v Value, typ Type) Value {
-	var srcVal = v.object()
+	srcVal := v.object()
 	if srcVal == jsType(v.typ).Get("nil") {
 		return makeValue(typ, jsType(typ).Get("nil"), v.flag)
 	}
@@ -696,6 +693,11 @@ func valueInterface(v Value) interface{} {
 	}
 
 	if isWrapped(v.typ) {
+		if v.flag&flagIndir != 0 && v.Kind() == Struct {
+			cv := jsType(v.typ).Call("zero")
+			copyStruct(cv, v.object(), v.typ)
+			return interface{}(unsafe.Pointer(jsType(v.typ).New(cv).Unsafe()))
+		}
 		return interface{}(unsafe.Pointer(jsType(v.typ).New(v.object()).Unsafe()))
 	}
 	return interface{}(unsafe.Pointer(v.object().Unsafe()))
@@ -909,7 +911,7 @@ func deepValueEqualJs(v1, v2 Value, visited [][2]unsafe.Pointer) bool {
 				return true
 			}
 		}
-		var n = v1.Len()
+		n := v1.Len()
 		if n != v2.Len() {
 			return false
 		}
@@ -927,7 +929,7 @@ func deepValueEqualJs(v1, v2 Value, visited [][2]unsafe.Pointer) bool {
 	case Ptr:
 		return deepValueEqualJs(v1.Elem(), v2.Elem(), visited)
 	case Struct:
-		var n = v1.NumField()
+		n := v1.NumField()
 		for i := 0; i < n; i++ {
 			if !deepValueEqualJs(v1.Field(i), v2.Field(i), visited) {
 				return false
@@ -941,7 +943,7 @@ func deepValueEqualJs(v1, v2 Value, visited [][2]unsafe.Pointer) bool {
 		if v1.object() == v2.object() {
 			return true
 		}
-		var keys = v1.MapKeys()
+		keys := v1.MapKeys()
 		if len(keys) != v2.Len() {
 			return false
 		}

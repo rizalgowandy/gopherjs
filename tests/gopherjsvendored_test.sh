@@ -37,6 +37,13 @@ func main() {
 for pkg in $(go list -f '{{if not .Goroot}}{{.ImportPath}}{{end}}' $(go list -f '{{.ImportPath}} {{join .Deps " "}}' github.com/gopherjs/gopherjs)); do
     copyGoPackage "$pkg" "$tmp/src/example.org/hello/vendor/$pkg"
 done
+# Two special cases
+for pkg in "github.com/gopherjs/gopherjs/js" "github.com/gopherjs/gopherjs/nosync"; do
+    copyGoPackage "$pkg" "$tmp/src/example.org/hello/vendor/$pkg"
+done
+
+cp -r "$(go list -f '{{.Dir}}' 'github.com/gopherjs/gopherjs/compiler/natives')/src" \
+      "$tmp/src/example.org/hello/vendor/github.com/gopherjs/gopherjs/compiler/natives/src"
 
 # Make $tmp our GOPATH workspace.
 export GOPATH="$tmp"

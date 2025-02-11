@@ -1,25 +1,26 @@
-GopherJS - A compiler from Go to JavaScript
--------------------------------------------
+## GopherJS - A compiler from Go to JavaScript
 
 [![GoDoc](https://godoc.org/github.com/gopherjs/gopherjs/js?status.svg)](https://godoc.org/github.com/gopherjs/gopherjs/js)
 [![Sourcegraph](https://sourcegraph.com/github.com/gopherjs/gopherjs/-/badge.svg)](https://sourcegraph.com/github.com/gopherjs/gopherjs?badge)
-[![Circle CI](https://circleci.com/gh/gopherjs/gopherjs.svg?style=svg)](https://circleci.com/gh/gopherjs/gopherjs)
+[![Github Actions CI](https://github.com/gopherjs/gopherjs/actions/workflows/ci.yaml/badge.svg)](https://github.com/gopherjs/gopherjs/actions/workflows/ci.yaml)
 
-GopherJS compiles Go code ([golang.org](https://golang.org/)) to pure JavaScript code. Its main purpose is to give you the opportunity to write front-end code in Go which will still run in all browsers.
+GopherJS compiles Go code ([go.dev](https://go.dev/)) to pure JavaScript code. Its main purpose is to give you the opportunity to write front-end code in Go which will still run in all browsers.
 
 ### Help us make GopherJS better!
 
- - ⤴️ **Help us make better decisions by filling a quick 15-question [GopherJS user survey](https://forms.gle/WEjZqZaPxTxjD9YP8)**.
- - 📢 Report and discuss [issues](https://github.com/gopherjs/gopherjs/issues).
- - 🎓 Share your knowledge and experience through [articles](https://github.com/gopherjs/gopherjs/wiki/Community-Tutorials-and-Blogs) and [documentation](https://github.com/gopherjs/gopherjs/tree/master/doc).
- - 🛠️ Write GopherJS [bindings](https://github.com/gopherjs/gopherjs/wiki/Bindings) for other libraries or [contribute](https://github.com/gopherjs/gopherjs/wiki/Developer-Guidelines) to GopherJS itself.
+- ⤴️ **Help us make better decisions by filling a quick 15-question [GopherJS user survey](https://forms.gle/WEjZqZaPxTxjD9YP8)**.
+- 📢 Report and discuss [issues](https://github.com/gopherjs/gopherjs/issues).
+- 🎓 Share your knowledge and experience through [articles](https://github.com/gopherjs/gopherjs/wiki/Community-Tutorials-and-Blogs) and [documentation](https://github.com/gopherjs/gopherjs/tree/master/doc).
+- 🛠️ Write GopherJS [bindings](https://github.com/gopherjs/gopherjs/wiki/Bindings) for other libraries or [contribute](https://github.com/gopherjs/gopherjs/wiki/Developer-Guidelines) to GopherJS itself.
 
 ### What's new?
 
- - 2021-09-19: Go 1.17 support is available!
- - 2021-08-23: Go Modules are now fully supported.
- - 2021-06-19: Complete `syscall/js` package implementation compatible with the upstream Go 1.16.
- - 2021-04-04: **Go 1.16 is now officially supported!** 🎉 🎉 🎉
+- 2024-02-24: Go 1.19 support is [available](https://github.com/gopherjs/gopherjs/releases/tag/v1.19.0-beta1)!
+- 2022-08-18: Go 1.18 support is [available](https://github.com/gopherjs/gopherjs/releases/tag/v1.18.0-beta2%2Bgo1.18.5)!
+- 2021-09-19: Go 1.17 support is available!
+- 2021-08-23: Go Modules are now fully supported.
+- 2021-06-19: Complete `syscall/js` package implementation compatible with the upstream Go 1.16.
+- 2021-04-04: **Go 1.16 is now officially supported!** 🎉 🎉 🎉
 
 ### Playground
 
@@ -31,36 +32,32 @@ Nearly everything, including Goroutines ([compatibility documentation](https://g
 
 ### Installation and Usage
 
-GopherJS [requires Go 1.17 or newer](https://github.com/gopherjs/gopherjs/blob/master/doc/compatibility.md#go-version-compatibility). If you need an older Go
-version, you can use an [older Gopher release](https://github.com/gopherjs/gopherjs/releases).
+GopherJS [requires Go 1.19 or newer](https://github.com/gopherjs/gopherjs/blob/master/doc/compatibility.md#go-version-compatibility). If you need an older Go
+version, you can use an [older GopherJS release](https://github.com/gopherjs/gopherjs/releases).
 
-Get or update GopherJS and dependencies with:
-
-```
-go get -u github.com/gopherjs/gopherjs
-```
-
-If your local Go distribution as reported by `go version` is newer than Go 1.17, then you need to set the `GOPHERJS_GOROOT` environment variable to a directory that contains a Go 1.17 distribution. For example:
+Install GopherJS with `go install`:
 
 ```
-go get golang.org/dl/go1.17.1
-go1.17.1 download
-export GOPHERJS_GOROOT="$(go1.17.1 env GOROOT)"  # Also add this line to your .profile or equivalent.
+go install github.com/gopherjs/gopherjs@v1.19.0-beta1  # Or replace 'v1.19.0-beta1' with another version.
+```
+
+If your local Go distribution as reported by `go version` is newer than Go 1.19, then you need to set the `GOPHERJS_GOROOT` environment variable to a directory that contains a Go 1.19 distribution. For example:
+
+```
+go install golang.org/dl/go1.19.13@latest
+go1.19.13 download
+export GOPHERJS_GOROOT="$(go1.19.13 env GOROOT)"  # Also add this line to your .profile or equivalent.
 ```
 
 Now you can use `gopherjs build [package]`, `gopherjs build [files]` or `gopherjs install [package]` which behave similar to the `go` tool. For `main` packages, these commands create a `.js` file and `.js.map` source map in the current directory or in `$GOPATH/bin`. The generated JavaScript file can be used as usual in a website. Use `gopherjs help [command]` to get a list of possible command line flags, e.g. for minification and automatically watching for changes.
 
 `gopherjs` uses your platform's default `GOOS` value when generating code. Supported `GOOS` values are: `linux`, `darwin`. If you're on a different platform (e.g., Windows or FreeBSD), you'll need to set the `GOOS` environment variable to a supported value. For example, `GOOS=linux gopherjs build [package]`.
 
-*Note: GopherJS will try to write compiled object files of the core packages to your $GOROOT/pkg directory. If that fails, it will fall back to $GOPATH/pkg.*
+_Note: GopherJS will try to write compiled object files of the core packages to your $GOROOT/pkg directory. If that fails, it will fall back to $GOPATH/pkg._
 
 #### gopherjs run, gopherjs test
 
-If you want to use `gopherjs run` or `gopherjs test` to run the generated code locally, install Node.js 10.0.0 (or newer), and the `source-map-support` module:
-
-```
-npm install --global source-map-support
-```
+If you want to use `gopherjs run` or `gopherjs test` to run the generated code locally, install Node.js 18 (or newer).
 
 On supported `GOOS` platforms, it's possible to make system calls (file system access, etc.) available. See [doc/syscalls.md](https://github.com/gopherjs/gopherjs/blob/master/doc/syscalls.md) for instructions on how to do so.
 
@@ -78,11 +75,11 @@ If you include an argument, it will be the root from which everything is served.
 
 There are some GopherJS-specific environment variables:
 
- - `GOPHERJS_GOROOT` - if set, GopherJS uses this value as the default GOROOT
-   value, instead of using the system GOROOT as the default GOROOT value
- - `GOPHERJS_SKIP_VERSION_CHECK` - if set to true, GopherJS will not check 
-   Go version in the GOROOT for compatibility with the GopherJS release. This
-	 is primarily useful for testing GopherJS against unreleased versions of Go.
+- `GOPHERJS_GOROOT` - if set, GopherJS uses this value as the default GOROOT
+  value, instead of using the system GOROOT as the default GOROOT value
+- `GOPHERJS_SKIP_VERSION_CHECK` - if set to true, GopherJS will not check
+  Go version in the GOROOT for compatibility with the GopherJS release. This
+  is primarily useful for testing GopherJS against unreleased versions of Go.
 
 ### Performance Tips
 
@@ -92,14 +89,17 @@ There are some GopherJS-specific environment variables:
 - Use `float64` instead of `float32`.
 
 ### Community
+
 - [#gopherjs Channel on Gophers Slack](https://gophers.slack.com/messages/gopherjs/) (invites to Gophers Slack are available [here](http://blog.gopheracademy.com/gophers-slack-community/#how-can-i-be-invited-to-join:2facdc921b2310f18cb851c36fa92369))
 - [Bindings to JavaScript APIs and libraries](https://github.com/gopherjs/gopherjs/wiki/bindings)
 - [GopherJS Blog](https://medium.com/gopherjs)
 - [GopherJS on Twitter](https://twitter.com/GopherJS)
 - [Examples, tutorials and blogs](https://github.com/gopherjs/gopherjs/wiki/Community-Tutorials-and-Blogs)
+
 ### Getting started
 
 #### Interacting with the DOM
+
 The package `github.com/gopherjs/gopherjs/js` (see [documentation](https://godoc.org/github.com/gopherjs/gopherjs/js)) provides functions for interacting with native JavaScript APIs. For example the line
 
 ```js
@@ -115,6 +115,7 @@ js.Global.Get("document").Call("write", "Hello world!")
 You may also want use the [DOM bindings](http://dominik.honnef.co/go/js/dom), the [jQuery bindings](https://github.com/gopherjs/jquery) (see [TodoMVC Example](https://github.com/gopherjs/todomvc)) or the [AngularJS bindings](https://github.com/wvell/go-angularjs). Those are some of the [bindings to JavaScript APIs and libraries](https://github.com/gopherjs/gopherjs/wiki/bindings) by community members.
 
 #### Providing library functions for use in other JavaScript code
+
 Set a global variable to a map that contains the functions:
 
 ```go
@@ -150,7 +151,10 @@ For more details see [Jason Stone's blog post](http://legacytotheedge.blogspot.d
 ### Architecture
 
 #### General
-GopherJS emulates a 32-bit environment. This means that `int`, `uint` and `uintptr` have a precision of 32 bits. However, the explicit 64-bit integer types `int64` and `uint64` are supported. The `GOARCH` value of GopherJS is "js". You may use it as a build constraint: `// +build js,-wasm`.
+
+GopherJS emulates a 32-bit environment. This means that `int`, `uint` and `uintptr` have a precision of 32 bits. However, the explicit 64-bit integer types `int64` and `uint64` are supported.
+
+The `GOOS` value of this environment is `js`, and the `GOARCH` value is `ecmascript`. You may use these values in build constraints when [writing platform-specific code](doc/compatibility.md#how-to-write-portable-code). (GopherJS 1.17 and older used `js` as the `GOARCH` value.)
 
 #### Application Lifecycle
 
@@ -159,6 +163,7 @@ The `main` function is executed as usual after all `init` functions have run. Ja
 In the browser, calling `os.Exit` (e.g. indirectly by `log.Fatal`) also does not terminate the execution of the program. For convenience, it calls `runtime.Goexit` to immediately terminate the calling goroutine.
 
 #### Goroutines
+
 Goroutines are fully supported by GopherJS. The only restriction is that you need to start a new goroutine if you want to use blocking code called from external JavaScript:
 
 ```go
@@ -178,4 +183,5 @@ JavaScript has no concept of concurrency (except web workers, but those are too 
 GopherJS does some heavy lifting to work around this restriction: Whenever an instruction is blocking (e.g. communicating with a channel that isn't ready), the whole stack will unwind (= all functions return) and the goroutine will be put to sleep. Then another goroutine which is ready to resume gets picked and its stack with all local variables will be restored.
 
 ### GopherJS Development
+
 If you're looking to make changes to the GopherJS compiler, see [Developer Guidelines](https://github.com/gopherjs/gopherjs/wiki/Developer-Guidelines) for additional developer information.

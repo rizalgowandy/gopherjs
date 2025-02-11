@@ -1,5 +1,4 @@
-//go:build go1.17
-// +build go1.17
+//go:build go1.19
 
 package compiler
 
@@ -13,10 +12,10 @@ import (
 )
 
 // Version is the GopherJS compiler version string.
-const Version = "1.17.1+go1.17.3"
+const Version = "1.19.0-beta1+go1.19.13"
 
 // GoVersion is the current Go 1.x version that GopherJS is compatible with.
-const GoVersion = 17
+const GoVersion = 19
 
 // CheckGoVersion checks the version of the Go distribution
 // at goroot, and reports an error if it's not compatible
@@ -35,13 +34,13 @@ func CheckGoVersion(goroot string) error {
 	return nil
 }
 
-// goRootVersion defermines Go release for the given GOROOT installation.
+// goRootVersion determines the Go release for the given GOROOT installation.
 func goRootVersion(goroot string) (string, error) {
-	v, err := os.ReadFile(filepath.Join(goroot, "VERSION"))
-	if err == nil {
-		// Standard Go distribution has VERSION file inside its GOROOT, checking it
-		// is the most efficient option.
-		return string(v), nil
+	if b, err := os.ReadFile(filepath.Join(goroot, "VERSION")); err == nil {
+		// Standard Go distribution has a VERSION file inside its GOROOT,
+		// checking its first line is the most efficient option.
+		v, _, _ := strings.Cut(string(b), "\n")
+		return v, nil
 	}
 
 	// Fall back to the "go version" command.
@@ -50,7 +49,7 @@ func goRootVersion(goroot string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("`go version` command failed: %w", err)
 	}
-	// Expected output: go version go1.17.1 linux/amd64
+	// Expected output: go version go1.18.1 linux/amd64
 	parts := strings.Split(string(out), " ")
 	if len(parts) != 4 {
 		return "", fmt.Errorf("unexpected `go version` output %q, expected 4 words", string(out))
@@ -58,8 +57,8 @@ func goRootVersion(goroot string) (string, error) {
 	return parts[2], nil
 }
 
-// GoRelease does a best-effort to identify Go release we are building with.
-// If unable to determin the precise version for the given GOROOT, falls back
+// GoRelease does a best-effort to identify the Go release we are building with.
+// If unable to determine the precise version for the given GOROOT, falls back
 // to the best guess available.
 func GoRelease(goroot string) string {
 	v, err := goRootVersion(goroot)
